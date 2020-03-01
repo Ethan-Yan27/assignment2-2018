@@ -2,7 +2,7 @@
 
 In [Assignment 1](https://github.com/dlsys-course/assignment1), we implemented the User API layer (computation graph and autodiff) of the deep learning system stack. In this assignment, we will go down the stack, and implement a simple version of the rest of the stack.
 
-![Image of Deep Learning Software Stack](https://github.com/tqchen/dl-system/blob/master/tvm_executor/dl_stack.png)
+![Image of Deep Learning Software Stack](dl_stack.png)
 
 We need to implement a computation graph executor that can manage memory for users and execute the forward and backward passes. We also need to implement deep learning kernels using a compiler-based approach through [TVM](http://tvmlang.org/).
 
