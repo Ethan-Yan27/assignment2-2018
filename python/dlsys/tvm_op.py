@@ -212,7 +212,7 @@ def make_matrix_softmax_cross_entropy(shape, tgt, tgt_host, func_name, dtype="fl
     s = tvm.te.create_schedule(mean_loss.op)
     f = tvm.build(s, [y, y_real, mean_loss], tgt,
                   target_host=tgt_host, name=func_name)
-    print(tvm.lower(s, [y, y_real, mean_loss],name=func_name, simple_mode=True))
+    # print(tvm.lower(s, [y, y_real, mean_loss],name=func_name, simple_mode=True))
     return f
 
 
