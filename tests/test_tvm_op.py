@@ -1,6 +1,7 @@
 import numpy as np
 import tvm
 from dlsys import autodiff, tvm_op
+import timeit
 
 tgt_host="llvm"
 tgt="llvm"
@@ -266,4 +267,41 @@ def test_broadcast_to():
     y = arr_y.asnumpy()
     np.testing.assert_allclose(np.broadcast_to(x, to_shape), y)
 
-test_softmax_cross_entropy()
+def test_GEMM_performance():
+    pf_tgt_host="llvm"
+    pf_tgt="llvm -mcpu=core-avx2"
+    dtype = "float32"
+    pf_ctx = tvm.context(tgt, 0)
+    M = 1024
+    N = 1024
+    K = 1024
+    transpose_A = True
+    transpose_B = True
+    gemm_func = tvm_op.make_matrix_mul((M,K),transpose_A,(K,N),transpose_B,pf_tgt,pf_tgt_host,"GEMM")
+
+    # Random generated tensor for testing
+    a = tvm.nd.array(np.random.rand(M, K).astype(dtype), pf_ctx)
+    b = tvm.nd.array(np.random.rand(K, N).astype(dtype), pf_ctx)
+    c = tvm.nd.array(np.zeros((M, N), dtype=dtype), ctx) 
+
+    np_repeat = 100
+    np_runing_time = timeit.timeit(setup='import numpy as np\n'
+                                        'M = ' + str(M) + '\n'
+                                        'K = ' + str(K) + '\n'
+                                        'N = ' + str(N) + '\n'
+                                        'dtype = "float32"\n'
+                                        'a = np.random.rand(M, K).astype(dtype)\n'
+                                        'b = np.random.rand(K, N).astype(dtype)\n',
+                                stmt='answer = np.dot(a.T, b.T)',
+                                number=np_repeat)
+    print("Numpy running time: %f" % (np_runing_time / np_repeat))
+
+    answer = np.dot(a.asnumpy().T, b.asnumpy().T)
+
+    gemm_func(a,b,c)
+    tvm.testing.assert_allclose(c.asnumpy(), answer, rtol=1e-5)
+
+    evaluator = gemm_func.time_evaluator(gemm_func.entry_name, pf_ctx, number=1)
+    print('Baseline: %f' % evaluator(a, b, c).mean) 
+
+# test_GEMM_performance()

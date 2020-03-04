@@ -98,39 +98,172 @@ def make_matrix_mul(shapeA, transposeA, shapeB, transposeB, tgt, tgt_host,
     B = tvm.te.placeholder(shapeB, dtype=dtype, name="B")
 
     if transposeA == False and transposeB == False:
-        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(
-            A[i][k] * B[k][j], axis=k), name="C")
+        bs = 32 #block size in C matrix
+        ks = 4 #K dim block size 
+
+        #To make B access a sequential pattern while compute a C matrix tile
+        packedB = tvm.te.compute((shapeB[1] / bs, shapeA[1], bs), lambda x, y, z: B[y, x * bs + z], name='packedB')
+        C = tvm.te.compute(shapeC, lambda x, y: tvm.te.sum(A[x, k] * packedB[y // bs, k, tvm.tir.indexmod(y, bs)], axis=k), name = 'C')
         s = tvm.te.create_schedule(C.op)
+
+        # Allocate write cache
+        CCache = s.cache_write(C, 'global')
+
+        # Blocking by loop tiling
+        xo, yo, xi, yi = s[C].tile(C.op.axis[0], C.op.axis[1], bs, bs)
+
+        # Write cache is computed at yo
+        s[CCache].compute_at(s[C], yo)
+        # New inner axes
+        xc, yc = s[CCache].op.axis
+
+        k, = s[CCache].op.reduce_axis
+        ko, ki = s[CCache].split(k, factor=ks)
+
+        s[CCache].reorder(ko, xc, ki, yc)
+        s[CCache].unroll(ki)
+        s[CCache].vectorize(yc)
+        # parallel
+        s[C].parallel(xo)
+
+        # Vercorization for packed B and parallel for it
+        xb, yb, zb = s[packedB].op.axis
+        s[packedB].vectorize(zb)
+        s[packedB].parallel(xb)
+
         f = tvm.build(s, [A, B, C], tgt, target_host=tgt_host, name=func_name)
-        # f = tvm.lower(s, [A, B, C], name=func_name, simple_mode=True)
-        # print(f)
+        # print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
         return f
 
     if transposeA == False and transposeB == True:
-        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(
-            A[i][k] * B[j][k], axis=k), name="C")
+        bs =64
+        # ks = int(64/4 * 2)
+        ks = 8
+
+        # not use pack
+        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[i][k] * B[j][k], axis=k), name="C")
         s = tvm.te.create_schedule(C.op)
+
+        # Allocate write cache
+        CCache = s.cache_write(C, 'global')
+
+        # Blocking by loop tiling
+        xo, yo, xi, yi = s[C].tile(C.op.axis[0], C.op.axis[1], bs, bs)
+
+        # Write cache is computed at yo
+        s[CCache].compute_at(s[C], yo)
+        # New inner axes
+        xc, yc = s[CCache].op.axis
+
+        k, = s[CCache].op.reduce_axis
+        ko, ki = s[CCache].split(k, factor=ks)
+
+        s[CCache].reorder(ko, xc, yc, ki)
+        s[CCache].unroll(ki)
+        s[CCache].unroll(yc)
+        #s[CCache].unroll(xc)
+
+        #s[CCache].vectorize(ki)
+        # parallel
+        s[C].parallel(xo)
+
+        # Vectorize for write back to output C
+        s[C].vectorize(yi)
+
         f = tvm.build(s, [A, B, C], tgt, target_host=tgt_host, name=func_name)
-        # f = tvm.lower(s, [A, B, C], name=func_name, simple_mode=True)
-        # print(f)
+        # print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
         return f
 
     if transposeA == True and transposeB == False:
-        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(
-            A[k][i] * B[k][j], axis=k), name="C")
+        # Add all optimization for A & B
+        bs = 32 
+        ks = 4
+
+        #To make A access a sequential pattern while compute a C matrix tile
+        packedA = tvm.te.compute((shapeA[1] / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
+
+        #To make B access a sequential pattern while compute a C matrix tile
+        packedB = tvm.te.compute((shapeB[1] / bs, shapeA[0], bs), lambda xb, yb, zb: B[yb, xb * bs + zb], name='packedB')
+
+        # C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[k][j], axis=k), name="C")
+        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(packedA[ i // bs ][k][tvm.tir.indexmod(i, bs)] * packedB[j//bs][k][tvm.tir.indexmod(j, bs)], axis=k), name="C")
         s = tvm.te.create_schedule(C.op)
+
+        #########
+        # Allocate write cache
+        CCache = s.cache_write(C, 'global')
+        xo, yo, xi, yi = s[C].tile(C.op.axis[0], C.op.axis[1], bs, bs)
+        # New inner axes
+        xc, yc = s[CCache].op.axis
+        # Blocking by loop tiling
+        # Write cache is computed at yo
+        s[CCache].compute_at(s[C], yo)
+
+        k, = s[CCache].op.reduce_axis
+        ko, ki = s[CCache].split(k, factor=ks)
+
+
+        s[CCache].reorder(ko, ki, xc, yc)
+        # s[CCache].unroll(xc)
+        s[CCache].vectorize(yc)
+
+
+        # # For packed array
+        xa, ya, za = s[packedA].op.axis
+        xb, yb, zb = s[packedB].op.axis
+        s[packedA].reorder(ya,xa,za)
+        s[packedB].reorder(yb,xb,zb)
+
+        s[packedA].vectorize(za)
+        s[packedB].vectorize(zb)
+        s[packedA].parallel(xa)
+        s[packedB].parallel(xb)
+
+        # # Vectorize for write back to output C
+        s[C].vectorize(yi)
+        s[C].parallel(xo)
+        # s[C].reorder(ko, ki, xi, yi)
+        # s[C].vectorize(yi)
         f = tvm.build(s, [A, B, C], tgt, target_host=tgt_host, name=func_name)
-        # f = tvm.lower(s, [A, B, C], name=func_name, simple_mode=True)
-        # print(f)
+        # print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
         return f
 
     if transposeA == True and transposeB == True:
-        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(
-            A[k][i] * B[j][k], axis=k), name="C")
+        # Add pack for A
+        # skip pack for B
+        bs = 32
+        ks = 8
+        
+        packedA = tvm.te.compute((shapeA[1] / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
+
+        # C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[j][k], axis=k), name="C")
+        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(packedA[ i // bs ][k][tvm.tir.indexmod(i, bs)] * B[j][k], axis=k), name="C")
         s = tvm.te.create_schedule(C.op)
+        ################################
+        
+        # Allocate write cache
+        CCache = s.cache_write(C, 'global')
+        xo, yo, xi, yi = s[C].tile(C.op.axis[0], C.op.axis[1], bs, bs)
+
+        # New inner axes
+        xc, yc = s[CCache].op.axis
+        s[CCache].compute_at(s[C], yo)
+
+        k, = s[CCache].op.reduce_axis
+        ko, ki = s[CCache].split(k, factor=ks)
+        
+        s[CCache].reorder(ko, yc, ki, xc)
+        s[CCache].unroll(ki)
+        s[CCache].vectorize(xc)
+
+        s[C].parallel(xo)
+
+
+        xa, ya, za = s[packedA].op.axis
+        s[packedA].vectorize(za)
+        s[packedA].parallel(xa)
         f = tvm.build(s, [A, B, C], tgt, target_host=tgt_host, name=func_name)
-        # f = tvm.lower(s, [A, B, C], name=func_name, simple_mode=True)
-        # print(f)
+        # print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
         return f
 
 
