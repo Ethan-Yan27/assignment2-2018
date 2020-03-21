@@ -102,8 +102,12 @@ def make_matrix_mul(shapeA, transposeA, shapeB, transposeB, tgt, tgt_host,
         ks = 4 #K dim block size 
 
         #To make B access a sequential pattern while compute a C matrix tile
-        packedB = tvm.te.compute((shapeB[1] / bs, shapeA[1], bs), lambda x, y, z: B[y, x * bs + z], name='packedB')
-        C = tvm.te.compute(shapeC, lambda x, y: tvm.te.sum(A[x, k] * packedB[y // bs, k, tvm.tir.indexmod(y, bs)], axis=k), name = 'C')
+        packedB = tvm.te.compute(((shapeB[1]+bs-1) / bs, shapeB[0], bs), lambda x, y, z: B[y, x * bs + z], name='packedB')
+        C = tvm.te.compute(shapeC, lambda x, y: tvm.te.sum(A[x][k] * packedB[y // bs][k][tvm.tir.indexmod(y, bs)], axis=k), name = 'C')
+
+        # C = tvm.te.compute(shapeC, lambda x, y: tvm.te.sum(A[x, k] * B[k, y], axis=k), name = 'C')
+
+
         s = tvm.te.create_schedule(C.op)
 
         # Allocate write cache
@@ -132,7 +136,7 @@ def make_matrix_mul(shapeA, transposeA, shapeB, transposeB, tgt, tgt_host,
         s[packedB].parallel(xb)
 
         f = tvm.build(s, [A, B, C], tgt, target_host=tgt_host, name=func_name)
-        # print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
+        #print(tvm.lower(s, [A, B, C], name=func_name, simple_mode=True))
         return f
 
     if transposeA == False and transposeB == True:
@@ -180,13 +184,15 @@ def make_matrix_mul(shapeA, transposeA, shapeB, transposeB, tgt, tgt_host,
         ks = 4
 
         #To make A access a sequential pattern while compute a C matrix tile
-        packedA = tvm.te.compute((shapeA[1] / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
+        packedA = tvm.te.compute(((shapeA[1]+bs-1) / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
 
         #To make B access a sequential pattern while compute a C matrix tile
-        packedB = tvm.te.compute((shapeB[1] / bs, shapeA[0], bs), lambda xb, yb, zb: B[yb, xb * bs + zb], name='packedB')
+        packedB = tvm.te.compute(((shapeB[1]+bs-1)/ bs, shapeB[0], bs), lambda xb, yb, zb: B[yb, xb * bs + zb], name='packedB')
 
-        # C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[k][j], axis=k), name="C")
+        C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[k][j], axis=k), name="C")
         C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(packedA[ i // bs ][k][tvm.tir.indexmod(i, bs)] * packedB[j//bs][k][tvm.tir.indexmod(j, bs)], axis=k), name="C")
+
+        # C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[k][j], axis=k), name="C") # naive version
         s = tvm.te.create_schedule(C.op)
 
         #########
@@ -234,7 +240,7 @@ def make_matrix_mul(shapeA, transposeA, shapeB, transposeB, tgt, tgt_host,
         bs = 32
         ks = 8
         
-        packedA = tvm.te.compute((shapeA[1] / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
+        packedA = tvm.te.compute(((shapeA[1]+bs-1) / bs, shapeA[0], bs), lambda xa, ya, za: A[ya, xa* bs + za], name='packedA')
 
         # C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(A[k][i] * B[j][k], axis=k), name="C")
         C = tvm.te.compute(shapeC, lambda i, j: tvm.te.sum(packedA[ i // bs ][k][tvm.tir.indexmod(i, bs)] * B[j][k], axis=k), name="C")

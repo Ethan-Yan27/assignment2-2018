@@ -272,11 +272,11 @@ def test_GEMM_performance():
     pf_tgt="llvm -mcpu=core-avx2"
     dtype = "float32"
     pf_ctx = tvm.context(tgt, 0)
-    M = 1024
-    N = 1024
-    K = 1024
-    transpose_A = True
-    transpose_B = True
+    M = 1000
+    N = 256
+    K = 784
+    transpose_A = False
+    transpose_B = False
     gemm_func = tvm_op.make_matrix_mul((M,K),transpose_A,(K,N),transpose_B,pf_tgt,pf_tgt_host,"GEMM")
 
     # Random generated tensor for testing
@@ -292,11 +292,11 @@ def test_GEMM_performance():
                                         'dtype = "float32"\n'
                                         'a = np.random.rand(M, K).astype(dtype)\n'
                                         'b = np.random.rand(K, N).astype(dtype)\n',
-                                stmt='answer = np.dot(a.T, b.T)',
+                                stmt='answer = np.dot(a, b)',
                                 number=np_repeat)
     print("Numpy running time: %f" % (np_runing_time / np_repeat))
 
-    answer = np.dot(a.asnumpy().T, b.asnumpy().T)
+    answer = np.dot(a.asnumpy(), b.asnumpy())
 
     gemm_func(a,b,c)
     tvm.testing.assert_allclose(c.asnumpy(), answer, rtol=1e-5)
@@ -304,4 +304,4 @@ def test_GEMM_performance():
     evaluator = gemm_func.time_evaluator(gemm_func.entry_name, pf_ctx, number=1)
     print('Baseline: %f' % evaluator(a, b, c).mean) 
 
-# test_GEMM_performance()
+test_GEMM_performance()
